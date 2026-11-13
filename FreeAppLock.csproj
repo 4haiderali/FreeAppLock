@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>FreeAppLock</AssemblyName>
+    <ApplicationIcon>Assets/AppLock.ico</ApplicationIcon>
+    <Version>1.0.1</Version>
+    <AssemblyVersion>1.0.1.0</AssemblyVersion>
+    <FileVersion>8.14.0.0</FileVersion>
+    <Product>FreeAppLock Privacy Monitor</Product>
+  </PropertyGroup>
+<ItemGroup><Compile Remove="Tests/**/*.cs"/><EmbeddedResource Remove="Tests/**"/><None Remove="Tests/**"/></ItemGroup>
+<ItemGroup><Resource Include="Assets/AppLock.ico"/><Resource Include="Assets/AppLock.png"/></ItemGroup>
+</Project>

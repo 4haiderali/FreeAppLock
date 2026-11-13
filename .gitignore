@@ -1,0 +1,24 @@
+# .NET / IDE outputs
+**/bin/
+**/obj/
+.vs/
+.vscode/
+*.user
+*.suo
+TestResults/
+*.pdb
+*.cache
+# Publish and installer outputs
+publish/
+Publish/
+dist/
+*.exe
+*.zip
+# Local settings, credentials and machine logs
+settings.json
+settings.json.*
+attempts.log
+*.bak
+*.log
+.env
+.env.*
