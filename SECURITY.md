@@ -17,3 +17,11 @@ Release binaries are unsigned. There is no privileged service, driver, pre-launc
 Grouping is a presentation change and does not authorize every process in the group. Recognized browser-owned dialogs share an approval only along visible/minimized owner links within the same PID; independent primary windows remain separate. Browser policy never selects the process-termination branch for recognized names, even if termination is enabled for other apps. Unknown/renamed browsers are subject to the ordinary optional termination setting; keep that setting off for them.
 
 Initial dialog activation uses standard foreground activation, a short foreground-responsiveness probe and a temporary input-thread attachment only when needed, always detached in finally. It does not modify global focus-lock settings. Foreground restrictions, secure desktops and higher-integrity apps remain compatibility limits.
+
+## Browser-profile companion
+
+The companion is installed only in profiles the user selects and controls regular browser windows using profile-local browser IDs. It has native messaging, storage and alarm permissions; it has no tab-content or host permissions. Profile discovery cannot create or alter desktop protection rules. Settings changes still require the admin password. The desktop retains all password verification and sends only window commands/status to the allowlisted extension origin.
+
+Native requests are length-bounded, validated, and forwarded over a current-user-only, session-scoped named pipe. Profile approvals are tied to a profile, native-host connection and window ID; closing/recreating a window or reconnecting does not inherit approval. A same-user process can still spoof/edit local data; these controls are not a tamper-resistant security boundary.
+
+Extension disabling, native-host failure or closing the desktop makes profile protection unavailable. The companion restores only windows it requested to minimize and reports its disconnected state. Private/incognito windows and cross-profile data reads are not covered. A saved profile shown offline is an enabled rule, not proof of active enforcement. Copied browser profiles that copy extension storage may need a fresh companion identity before being used as distinct profiles.

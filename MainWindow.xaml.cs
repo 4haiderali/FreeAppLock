@@ -66,6 +66,7 @@ public partial class MainWindow : Window
     readonly DispatcherTimer scan = new() { Interval = TimeSpan.FromMilliseconds(250) };
     readonly DispatcherTimer refresh = new() { Interval = TimeSpan.FromSeconds(2) };
     readonly HashSet<IntPtr> approved = new();
+    readonly Dictionary<IntPtr,UnlockLease> leases = new();
     readonly HashSet<IntPtr> pendingRestores = new();
     // Only restore windows minimized by FreeAppLock, never windows the user minimized.
     readonly HashSet<IntPtr> minimizedByUs = new();
@@ -123,6 +124,7 @@ public partial class MainWindow : Window
                 System.Windows.MessageBox.Show("Window lifetime monitoring could not start. FreeAppLock will close rather than retain unsafe window approvals.", "Monitoring unavailable");
                 quitting = true; Close(); return;
             }
+            StartProfileBridge();
             scan.Start(); refresh.Start(); MonitorChanged(); RefreshApps();
             if (App.StartInTray) Hide();
         };
@@ -250,7 +252,7 @@ public partial class MainWindow : Window
         catch { /* Logs are best-effort and stored in user-controlled app data. */ }
     }
     public void ChangeAdmin() { if (!VerifyAdmin("change your admin password")) return; if (NewPassword("Change admin password", "Any nonempty password is allowed: letters, numbers or symbols.", out var next)) { TryUpdateConfig(c => SettingsStore.SetPassword(c, next)); } }
-    public void ChangeAppPassword() { if (!VerifyAdmin("change the application unlock password")) return; if (NewPassword("Change app password", "This password unlocks protected apps. Any nonempty password is allowed.", out var next)) { if (TryUpdateConfig(c => SettingsStore.SetAppPassword(c, next))) { approved.Clear(); pendingRestores.Clear(); awayAt.Clear(); grace.Clear(); Scan(); } } }
+    public void ChangeAppPassword() { if (!VerifyAdmin("change the application unlock password")) return; if (NewPassword("Change app password", "This password unlocks protected apps. Any nonempty password is allowed.", out var next)) { if (TryUpdateConfig(c => SettingsStore.SetAppPassword(c, next))) { approved.Clear(); leases.Clear(); pendingRestores.Clear(); awayAt.Clear(); grace.Clear(); Scan(); } } }
     public void ShowHistory()
     {
         if (!VerifyAdmin("view failed attempts")) return;
@@ -259,14 +261,14 @@ public partial class MainWindow : Window
     }
     public bool TryUpdateConfig(Action<LockSettings> change)
     {
-        try { Config = SettingsStore.Update(Config, change); return true; }
+        try { Config = SettingsStore.Update(Config, change); RefreshRuleViews(); return true; }
         catch (Exception ex)
         {
             System.Windows.MessageBox.Show("The change was not applied because settings could not be saved: " + ex.Message, "Settings unchanged");
             return false;
         }
     }
-    public void MonitorChanged() { MonitorStatus.Text = Config.Monitoring ? "●  Monitoring on" : "●  Monitoring off"; if (!Config.Monitoring) { approved.Clear(); pendingRestores.Clear(); awayAt.Clear(); RestoreAll(); } }
+    public void MonitorChanged() { MonitorStatus.Text = Config.Monitoring ? "●  Monitoring on" : "●  Monitoring off"; if (!Config.Monitoring) { approved.Clear(); leases.Clear(); pendingRestores.Clear(); awayAt.Clear(); RestoreAll(); } }
     public bool IsAutoStart() { try { return StartupRegistration.IsEnabled(); } catch { return false; } }
     public void SetAutoStart(bool enabled) => StartupRegistration.SetEnabled(enabled);
     // Presentation-only: use spare ListView width for long window titles.
@@ -345,7 +347,7 @@ public partial class MainWindow : Window
         }
         if (!VerifyAdmin("change the protection rule for " + item.Name)) return;
         bool removing = Config.LockedNames.Contains(item.Name);
-        if (!TryUpdateConfig(c => { if (removing) c.LockedNames.Remove(item.Name); else c.LockedNames.Add(item.Name); })) return;
+        if (!TryUpdateConfig(c => { if (removing) { c.LockedNames.Remove(item.Name); c.AppRules.Remove(item.Name); } else { c.LockedNames.Add(item.Name); c.AppRules[item.Name]=new LockRule {AwaySeconds=c.AutoLockDelaySeconds}; } })) return;
         if (removing)
         {
             foreach (var kv in knownNames.Where(x => x.Value.Equals(item.Name, StringComparison.OrdinalIgnoreCase)).ToArray())
@@ -416,6 +418,7 @@ public partial class MainWindow : Window
     void Scan()
     {
         DrainDestroyedWindows();
+        TryPromptProfiles();
         if (scanning || !Config.Monitoring || Config.LockedNames.Count == 0) return;
         scanning=true;
         try
@@ -426,7 +429,7 @@ public partial class MainWindow : Window
             // Remove credentials for destroyed windows, even if their PID still exists.
             foreach(var hwnd in windows.Keys.Where(h => !discovered.ContainsKey(h) || discovered[h] != windows[h]).ToArray())
             {
-                approved.Remove(hwnd); pendingRestores.Remove(hwnd); attempts.Remove(hwnd); appBlockedUntil.Remove(hwnd); awayAt.Remove(hwnd); grace.Remove(hwnd);
+                approved.Remove(hwnd); leases.Remove(hwnd); pendingRestores.Remove(hwnd); attempts.Remove(hwnd); appBlockedUntil.Remove(hwnd); awayAt.Remove(hwnd); grace.Remove(hwnd);
                 minimizedByUs.Remove(hwnd); knownNames.Remove(hwnd); windows.Remove(hwnd);
             }
             foreach(var kv in discovered)
@@ -443,12 +446,12 @@ public partial class MainWindow : Window
                     {
                         // Existing rules are retained for future compatible processes,
                         // but never claim or attempt enforcement against unsupported ones.
-                        approved.Remove(hwnd); awayAt.Remove(hwnd); grace.Remove(hwnd);
+                        approved.Remove(hwnd); leases.Remove(hwnd); awayAt.Remove(hwnd); grace.Remove(hwnd);
                         knownNames.Remove(hwnd); windows.Remove(hwnd);
                         continue;
                     }
                     if(knownNames.TryGetValue(hwnd,out var previous) && !previous.Equals(name,StringComparison.OrdinalIgnoreCase))
-                    { approved.Remove(hwnd); attempts.Remove(hwnd); awayAt.Remove(hwnd); grace.Remove(hwnd); }
+                    { approved.Remove(hwnd); leases.Remove(hwnd); attempts.Remove(hwnd); awayAt.Remove(hwnd); grace.Remove(hwnd); }
                     knownNames[hwnd]=name; windows[hwnd]=pid;
                     var ownerWindow = AuthorizationWindow(hwnd,name);
                     if (ownerWindow != hwnd)
@@ -467,19 +470,18 @@ public partial class MainWindow : Window
                     }
                     if(approved.Contains(hwnd))
                     {
-                        if(NativeMethods.IsIconic(hwnd))
+                        bool minimized=NativeMethods.IsIconic(hwnd);
+                        bool restoring=pendingRestores.Contains(hwnd)&&grace.TryGetValue(hwnd,out var restoreDeadline)&&DateTime.UtcNow<restoreDeadline;
+                        if(!minimized && pendingRestores.Remove(hwnd) && !prompting && active==new WindowInteropHelper(this).Handle)NativeMethods.SetForegroundWindow(hwnd);
+                        bool focused=active==hwnd||AuthorizationWindow(active,name)==hwnd||NativeMethods.GetAncestor(active,3)==hwnd;
+                        bool inGrace=grace.TryGetValue(hwnd,out var until)&&DateTime.UtcNow<until;
+                        if(!leases.TryGetValue(hwnd,out var lease))leases[hwnd]=lease=new UnlockLease(Environment.TickCount64);
+                        if(LockTiming.Expired(Config.RuleFor(name),lease,Environment.TickCount64,focused||inGrace,minimized&&!restoring))
                         {
-                            // An asynchronous restore may not have reached the target yet.
-                            if (pendingRestores.Contains(hwnd) && grace.TryGetValue(hwnd, out var restoreDeadline) && DateTime.UtcNow < restoreDeadline) continue;
-                            pendingRestores.Remove(hwnd); approved.Remove(hwnd); awayAt.Remove(hwnd); continue;
+                            approved.Remove(hwnd);leases.Remove(hwnd);awayAt.Remove(hwnd);grace.Remove(hwnd);pendingRestores.Remove(hwnd);
+                            if(!minimized)Minimize(hwnd);
+                            Notice.Text=name+" relocked by its protection rule";
                         }
-                        if (pendingRestores.Remove(hwnd) && !prompting && active == new WindowInteropHelper(this).Handle)
-                            NativeMethods.SetForegroundWindow(hwnd);
-                        if(active == hwnd || AuthorizationWindow(active,name)==hwnd || NativeMethods.GetAncestor(active, 3) == hwnd) { awayAt.Remove(hwnd); continue; }
-                        if(grace.TryGetValue(hwnd,out var until) && DateTime.UtcNow < until) continue;
-                        if(!awayAt.TryGetValue(hwnd,out var since)) awayAt[hwnd]=DateTime.UtcNow;
-                        else if((DateTime.UtcNow-since).TotalSeconds >= Config.AutoLockDelaySeconds)
-                        { approved.Remove(hwnd); awayAt.Remove(hwnd); }
                         continue;
                     }
                     // Cover every unapproved protected window (including secondary monitors),
@@ -494,7 +496,7 @@ public partial class MainWindow : Window
                         break;
                     }
                 }
-                catch { approved.Remove(hwnd); }
+                catch { approved.Remove(hwnd); leases.Remove(hwnd); }
             }
         }
         catch { }
@@ -509,7 +511,7 @@ public partial class MainWindow : Window
     {
         DrainDestroyedWindows();
         hwnd = AuthorizationWindow(hwnd,name);
-        if(prompting || !Config.Monitoring || !Config.LockedNames.Contains(name) || !NativeMethods.IsWindow(hwnd)) return;
+        if(prompting || System.Windows.Application.Current.Windows.OfType<PasswordWindow>().Any(w=>w.IsVisible) || !Config.Monitoring || !Config.LockedNames.Contains(name) || !NativeMethods.IsWindow(hwnd)) return;
         if (appBlockedUntil.TryGetValue(hwnd, out var until))
         {
             if (DateTime.UtcNow < until)
@@ -551,7 +553,7 @@ public partial class MainWindow : Window
             if(currentPid != unchecked((uint)pid)) { CleanupWindow(hwnd); return; }
             if(success)
             {
-                attempts.Remove(hwnd); appBlockedUntil.Remove(hwnd); approved.Add(hwnd); awayAt.Remove(hwnd);
+                attempts.Remove(hwnd); appBlockedUntil.Remove(hwnd); approved.Add(hwnd); leases[hwnd]=new UnlockLease(Environment.TickCount64); awayAt.Remove(hwnd);
                 grace[hwnd]=DateTime.UtcNow.AddSeconds(2);
                 Restore(hwnd);
                 if (BrowserPolicy.PreservesTabs(name))
@@ -584,7 +586,7 @@ public partial class MainWindow : Window
     }
     void CleanupWindow(IntPtr hwnd)
     {
-        approved.Remove(hwnd); pendingRestores.Remove(hwnd); attempts.Remove(hwnd); appBlockedUntil.Remove(hwnd); awayAt.Remove(hwnd); grace.Remove(hwnd);
+        approved.Remove(hwnd); leases.Remove(hwnd); pendingRestores.Remove(hwnd); attempts.Remove(hwnd); appBlockedUntil.Remove(hwnd); awayAt.Remove(hwnd); grace.Remove(hwnd);
         minimizedByUs.Remove(hwnd); windows.Remove(hwnd); knownNames.Remove(hwnd);
     }
     void Minimize(IntPtr hwnd)
@@ -604,7 +606,7 @@ public partial class MainWindow : Window
                 pendingRestores.Add(hwnd);
                 NativeMethods.SetForegroundWindow(hwnd);
             }
-            else approved.Remove(hwnd);
+            else approved.Remove(hwnd); leases.Remove(hwnd);
         }
         minimizedByUs.Remove(hwnd);
     }
@@ -648,7 +650,7 @@ public partial class MainWindow : Window
     }
     void RefreshApps(bool resetScroll = false)
     {
-        if (!IsLoaded || prompting) return;
+        if (!IsLoaded || prompting) { if(IsLoaded)RefreshRuleViews(); return; }
         var selected=(Apps.SelectedItem as AppEntry)?.Name;
         var oldOffset = resetScroll ? 0 : FindVisualChild<ScrollViewer>(Apps)?.VerticalOffset ?? 0;
         var entries=new List<AppEntry>();
@@ -697,9 +699,11 @@ public partial class MainWindow : Window
                 State=g.State, StatusDetail=g.Detail, WindowCount=g.WindowCount, CanEnforce=g.CanEnforce,
                 EnforcementReason=g.Reason, Icon=GetApplicationIcon(g.Pid) })
             .Where(e => ShowSystem.IsChecked == true || Config.LockedNames.Contains(e.Name) || e.WindowCount > 0)
-            .Where(e => e.Name.Contains(Search.Text,StringComparison.OrdinalIgnoreCase) || e.Title.Contains(Search.Text,StringComparison.OrdinalIgnoreCase)
-                || e.StatusDetail.Contains(Search.Text,StringComparison.OrdinalIgnoreCase))
             .OrderBy(e => e.Name,StringComparer.OrdinalIgnoreCase).ToList();
+        lastApplicationRows=entries;
+        RefreshRuleViews();
+        entries=entries.Where(e => e.Name.Contains(Search.Text,StringComparison.OrdinalIgnoreCase) || e.Title.Contains(Search.Text,StringComparison.OrdinalIgnoreCase)
+                || e.StatusDetail.Contains(Search.Text,StringComparison.OrdinalIgnoreCase)).ToList();
         // Recreating ListView items every two seconds resets the scrollbar and selection.
         // Retain the existing items whenever nothing displayed has changed.
         if (Apps.ItemsSource is List<AppEntry> current && current.Count == entries.Count &&
@@ -729,7 +733,7 @@ public partial class MainWindow : Window
     {
         if (quitting || sessionEndingPending)
         {
-            scan.Stop(); refresh.Stop();
+            scan.Stop(); refresh.Stop(); profileServer?.Dispose();
             if (windowEventHook != IntPtr.Zero) { NativeMethods.UnhookWinEvent(windowEventHook); windowEventHook = IntPtr.Zero; }
             tray.Visible = false; tray.Dispose(); appIcon.Dispose();
             return;

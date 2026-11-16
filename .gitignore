@@ -22,3 +22,5 @@ attempts.log
 *.log
 .env
 .env.*
+
+publish-host/

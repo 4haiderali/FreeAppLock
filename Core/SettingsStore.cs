@@ -9,6 +9,9 @@ public sealed class LockSettings
     public string Salt { get; set; } = "";
     public string Hash { get; set; } = "";
     public HashSet<string> LockedNames { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string,LockRule> AppRules { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string,BrowserProfileRule> BrowserProfiles { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public LockRule RuleFor(string name) => AppRules.TryGetValue(name,out var rule) ? rule : new LockRule { AwaySeconds=AutoLockDelaySeconds };
     public bool Monitoring { get; set; } = true;
     public string AppSalt { get; set; } = "";
     public string AppHash { get; set; } = "";
@@ -34,7 +37,7 @@ public static class SettingsStore
             var item = JsonSerializer.Deserialize<LockSettings>(File.ReadAllText(path))
                 ?? throw new InvalidDataException("Settings must contain an object.");
             Validate(item);
-            item.LockedNames = new HashSet<string>(item.LockedNames, StringComparer.OrdinalIgnoreCase);
+            Normalize(item);
             return item;
         }
         catch (Exception ex)
@@ -42,12 +45,30 @@ public static class SettingsStore
             throw new InvalidOperationException("Cannot read settings. Restore settings.json.bak or repair the settings file; no settings were changed.", ex);
         }
     }
+    static void Normalize(LockSettings item)
+    {
+        item.LockedNames = new HashSet<string>(item.LockedNames,StringComparer.OrdinalIgnoreCase);
+        item.AppRules = new Dictionary<string,LockRule>(item.AppRules,StringComparer.OrdinalIgnoreCase);
+        item.BrowserProfiles = new Dictionary<string,BrowserProfileRule>(item.BrowserProfiles,StringComparer.OrdinalIgnoreCase);
+    }
     internal static void Validate(LockSettings item)
     {
         if (item.LockedNames == null || item.LockedNames.Any(string.IsNullOrWhiteSpace))
             throw new InvalidDataException("Invalid application rules.");
         if (item.AutoLockDelaySeconds is < 0 or > 86400 || item.AdminFailedAttempts is < 0 or > 4 || item.AdminCooldownLevel is < 0 or > 5)
             throw new InvalidDataException("Invalid settings range.");
+        if (item.AppRules==null || item.BrowserProfiles==null || item.BrowserProfiles.Count>100) throw new InvalidDataException("Invalid protection rules.");
+        foreach(var pair in item.AppRules)
+        {
+            if(string.IsNullOrWhiteSpace(pair.Key) || pair.Value==null) throw new InvalidDataException("Invalid application rule.");
+            pair.Value.Validate();
+        }
+        foreach(var pair in item.BrowserProfiles)
+        {
+            if(!Guid.TryParse(pair.Key,out _) || pair.Value==null || string.IsNullOrWhiteSpace(pair.Value.Name) || pair.Value.Name.Length>80 || pair.Value.Timing==null || !ProfileRequest.IsBrowser(pair.Value.Browser))
+                throw new InvalidDataException("Invalid browser profile rule.");
+            pair.Value.Timing.Validate();
+        }
         ValidateHash(item.Salt, item.Hash);
         ValidateHash(item.AppSalt, item.AppHash);
     }
@@ -60,7 +81,7 @@ public static class SettingsStore
     internal static LockSettings Update(LockSettings current, Action<LockSettings> change, Action<LockSettings>? persist = null)
     {
         var candidate = JsonSerializer.Deserialize<LockSettings>(JsonSerializer.Serialize(current))!;
-        candidate.LockedNames = new HashSet<string>(candidate.LockedNames, StringComparer.OrdinalIgnoreCase);
+        Normalize(candidate);
         change(candidate);
         Validate(candidate);
         (persist ?? Save)(candidate);

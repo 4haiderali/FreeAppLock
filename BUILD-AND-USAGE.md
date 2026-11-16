@@ -1,6 +1,6 @@
-# FreeAppLock 1.0.1
+# FreeAppLock 1.1.0
 
-Run FreeAppLock-1.0.1-Setup-x64.exe normally and accept the Windows administrator prompt. Close any running older FreeAppLock first using its authenticated Quit action.
+Run FreeAppLock-1.1.0-Setup-x64.exe normally and accept the Windows administrator prompt. Close any running older FreeAppLock first using its authenticated Quit action.
 
 The installer defaults to C:\Program Files\FreeAppLock on a standard C-drive Windows installation. It creates Start menu and desktop shortcuts, enables login startup for all users, and offers to launch the app at the end. Desktop shortcut and login startup tasks are checked by default and can be deselected. The .NET runtime is included. No separate SDK/runtime installation is required.
 
@@ -40,4 +40,6 @@ The password prompt activates and focuses its input after rendering, including t
 
 ## Public version and existing installations
 
-The public release is v1.0.1, shown beside the app name in its header, title bar and tray tooltip. It can update the earlier locally distributed v8.13 installation without uninstalling. The Windows file/upgrade version remains monotonically increasing (8.14.0.0 for this release) to preserve that upgrade path; the product/app version is 1.0.1. Future releases must increase both the public Version/AssemblyVersion and the internal FileVersion. Keep the production installer AppId stable. The installer records the internal upgrade version in a separate machine installer key, independently of its public DisplayVersion.
+The public release is v1.1.0, shown beside the app name in its header, title bar and tray tooltip. It can update the earlier locally distributed v8.13 installation without uninstalling. The Windows file/upgrade version remains monotonically increasing (8.15.0.0 for this release) to preserve that upgrade path; the product/app version is 1.1.0. Future releases must increase both the public Version/AssemblyVersion and the internal FileVersion. Keep the production installer AppId stable. The installer records the internal upgrade version in a separate machine installer key, independently of its public DisplayVersion.
+
+For new per-app timers and profile setup, see README.md and BROWSER-PROFILES.md.

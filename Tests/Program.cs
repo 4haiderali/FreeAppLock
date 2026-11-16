@@ -111,6 +111,79 @@ try
         Assert(BrowserPolicy.ShouldTerminate("DisposableEditor",true));
         Assert(!BrowserPolicy.ShouldTerminate("DisposableEditor",false));
     });
+    Check("Existing settings inherit the legacy away/minimize behavior", () => {
+        var legacy=new LockSettings {AutoLockDelaySeconds=120}; legacy.LockedNames.Add("brave");
+        Assert(legacy.RuleFor("brave").AwaySeconds==120 && legacy.RuleFor("brave").LockOnMinimize && legacy.RuleFor("brave").MaximumUnlockedSeconds==null);
+        legacy.AppRules["BRAVE"]=new LockRule {AwaySeconds=null,MaximumUnlockedSeconds=600,LockOnMinimize=false};
+        Assert(legacy.RuleFor("brave").AwaySeconds==null && legacy.RuleFor("brave").MaximumUnlockedSeconds==600);
+    });
+    Check("Session limit expires even while focused", () => {
+        var rule=new LockRule {AwaySeconds=null,MaximumUnlockedSeconds=10,LockOnMinimize=false};var lease=new UnlockLease(1000);
+        Assert(!LockTiming.Expired(rule,lease,10999,true,false)); Assert(LockTiming.Expired(rule,lease,11000,true,false));
+    });
+    Check("Away timer resets on return and supports never", () => {
+        var rule=new LockRule {AwaySeconds=5,LockOnMinimize=false};var lease=new UnlockLease(0);
+        Assert(!LockTiming.Expired(rule,lease,1000,false,false));Assert(!LockTiming.Expired(rule,lease,5999,false,false));
+        Assert(!LockTiming.Expired(rule,lease,6000,true,false));Assert(lease.AwayAt==null);
+        Assert(!LockTiming.Expired(rule,lease,7000,false,false));Assert(LockTiming.Expired(rule,lease,12000,false,false));
+        rule.AwaySeconds=null;Assert(!LockTiming.Expired(rule,lease,999999,false,false));
+    });
+    Check("Minimize option is independent from away/session timers", () => {
+        var lease=new UnlockLease(0);var rule=new LockRule {AwaySeconds=null,LockOnMinimize=false};
+        Assert(!LockTiming.Expired(rule,lease,1000,false,true));rule.LockOnMinimize=true;Assert(LockTiming.Expired(rule,lease,1000,false,true));
+        rule.LockOnMinimize=false;rule.MaximumUnlockedSeconds=1;Assert(LockTiming.Expired(rule,lease,1000,false,true));
+    });
+    Check("Rule updates persist independently and failures preserve old rules", () => {
+        var original=new LockSettings();original.LockedNames.Add("editor");original.AppRules["editor"]=new LockRule {AwaySeconds=null,MaximumUnlockedSeconds=30,LockOnMinimize=false};
+        Throws(()=>SettingsStore.Update(original,c=>c.AppRules["editor"].MaximumUnlockedSeconds=60,_=>throw new IOException()));
+        Assert(original.RuleFor("EDITOR").MaximumUnlockedSeconds==30);
+        var next=SettingsStore.Update(original,c=>c.AppRules["browser"]=new LockRule {AwaySeconds=5},_=>{});
+        Assert(next.RuleFor("EDITOR").MaximumUnlockedSeconds==30 && next.RuleFor("BROWSER").AwaySeconds==5);
+        Throws(()=>SettingsStore.Update(original,c=>c.AppRules["editor"].MaximumUnlockedSeconds=0,_=>{}));
+    });
+    string profileA=Guid.NewGuid().ToString(),profileB=Guid.NewGuid().ToString(),sessionA=Guid.NewGuid().ToString(),sessionB=Guid.NewGuid().ToString();
+    ProfileRequest Packet(string profile,string session,bool unlock=false,params int[] ids)=>new(){RequestId=Guid.NewGuid().ToString(),ProfileId=profile,SessionId=session,Name="Work",Browser="brave",Type=unlock?"unlock":"sync",UnlockWindow=unlock?ids.First():null,Windows=ids.Select(id=>new ProfileWindowSnapshot {Id=id,Minimized=true}).ToList()};
+    Check("Unselected browser profiles remain free; discovery cannot create rules", () => {
+        var config=new LockSettings();config.BrowserProfiles[profileA]=new BrowserProfileRule {Name="Work",Browser="brave"};var coordinator=new ProfileCoordinator();
+        Assert(coordinator.Handle(Packet(profileA,sessionA,false,1),config,0).Protected);
+        Assert(!coordinator.Handle(Packet(profileB,sessionB,false,1),config,0).Protected);
+        Assert(config.BrowserProfiles.Count==1);
+    });
+    Check("Profile grants belong to one window and connection", () => {
+        var config=new LockSettings();config.BrowserProfiles[profileA]=new BrowserProfileRule {Name="Work",Browser="brave",Timing=new LockRule {AwaySeconds=null,LockOnMinimize=false}};
+        var coordinator=new ProfileCoordinator();coordinator.Handle(Packet(profileA,sessionA,true,1,2),config,0);var key=coordinator.NextUnlock(config,0)!;Assert(key.Window==1);
+        coordinator.Complete(key,true,false,0);var reply=coordinator.Handle(Packet(profileA,sessionA,false,1,2),config,1);
+        Assert(reply.Approved.SequenceEqual(new[]{1}) && reply.Commands.Any(c=>c.Id==2&&c.Action=="lock"));
+        Assert(coordinator.Handle(Packet(profileA,sessionB,false,1),config,1).Approved.Count==0);
+    });
+    Check("Closed/recreated profile windows never inherit approval", () => {
+        var config=new LockSettings();config.BrowserProfiles[profileA]=new BrowserProfileRule {Name="Work",Browser="brave"};var coordinator=new ProfileCoordinator();
+        coordinator.Handle(Packet(profileA,sessionA,true,1),config,0);var key=coordinator.NextUnlock(config,0)!;coordinator.Complete(key,true,false,0);
+        coordinator.Handle(Packet(profileA,sessionA),config,1);Assert(!coordinator.Current(key,1));
+        Assert(coordinator.Handle(Packet(profileA,sessionA,false,1),config,2).Approved.Count==0);
+    });
+    Check("Profile cooldown and offline status are truthful", () => {
+        var config=new LockSettings();config.BrowserProfiles[profileA]=new BrowserProfileRule {Name="Work",Browser="brave"};var coordinator=new ProfileCoordinator();
+        coordinator.Handle(Packet(profileA,sessionA,true,1),config,0);var key=coordinator.NextUnlock(config,0)!;coordinator.Complete(key,false,true,0);
+        coordinator.Handle(Packet(profileA,sessionA,true,1),config,1000);Assert(coordinator.NextUnlock(config,1000)==null);
+        coordinator.Handle(Packet(profileA,sessionA,true,1),config,60001);Assert(coordinator.NextUnlock(config,60001)!=null);
+        Assert(coordinator.Status(config,66002).Single().State=="Extension offline");
+    });
+    Check("Native frames and malformed profile messages are bounded", () => {
+        using var stream=new MemoryStream();NativeWire.Write(stream,"{\"test\":1}").GetAwaiter().GetResult();stream.Position=0;
+        Assert(NativeWire.Read(stream).GetAwaiter().GetResult()=="{\"test\":1}");
+        Throws(()=>NativeWire.Read(new MemoryStream(new byte[]{255,255,255,127})).GetAwaiter().GetResult());
+        var bad=Packet(profileA,sessionA,false,1,1);Assert(!bad.Valid());bad=Packet(profileA,sessionA,false,1);bad.Type="changeRules";Assert(!bad.Valid());
+    });
+    Check("Per-user profile pipe round trip uses an isolated pipe", () => {
+        string pipeName="FreeAppLock.Test."+Guid.NewGuid().ToString("N");
+        using var server=new ProfilePipeServer(r=>Task.FromResult(new ProfileReply {RequestId=r.RequestId,Message="test"}),pipeName);
+        using var client=new System.IO.Pipes.NamedPipeClientStream(".",pipeName,System.IO.Pipes.PipeDirection.InOut,System.IO.Pipes.PipeOptions.Asynchronous|System.IO.Pipes.PipeOptions.CurrentUserOnly);
+        client.Connect(3000);var request=Packet(profileA,sessionA,false,1);var options=new System.Text.Json.JsonSerializerOptions {PropertyNamingPolicy=System.Text.Json.JsonNamingPolicy.CamelCase};
+        NativeWire.Write(client,System.Text.Json.JsonSerializer.Serialize(request,options)).GetAwaiter().GetResult();
+        var reply=System.Text.Json.JsonSerializer.Deserialize<ProfileReply>(NativeWire.Read(client).GetAwaiter().GetResult()!,new System.Text.Json.JsonSerializerOptions{PropertyNameCaseInsensitive=true});
+        Assert(reply!.RequestId==request.RequestId && reply.Message=="test");
+    });
     Console.WriteLine($"{passed} test groups passed.");
 }
 finally { Directory.Delete(root, recursive: true); }

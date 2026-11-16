@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "FreeAppLock Profile Companion",
+  "version": "1.1.0",
+  "description": "Connect this browser profile to FreeAppLock. Window-level privacy controls; no browsing-content permissions.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA01UkhGUUp1IVRG1Z0WTPH2ogGu18qNh9QRKFuGBVoZ63gWV3iJGC3LAcHeaiOZunl8jXcBjQAArjtfM9N9vpVu3ZymKcM1YcyIg/qR7rgMn2A7f+zCwzL9KOqXIoSsm9ivy+CXDezImKgnS1OYLrNQLLa95gV0hrtY2bQFEGVQbw2LOlHGhDMz5K5v0Qd6NhwFWnYbqoLLrAWck4JBKGZ9VnDbpBYyeCOwXS+bu/vvmMVqRTIe5PdK8yhfT2mxk1BgKnSC7T3WD511Y2Y5lNYgtlv93+1ns0Yoim7rS78Ljt9UppHatJf81rdBs/wyU3N1iFMDkZXnSF76QF5Li6xQIDAQAB",
+  "permissions": [
+    "nativeMessaging",
+    "storage",
+    "alarms"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "FreeAppLock profile"
+  },
+  "icons": {
+    "128": "icon.png"
+  },
+  "minimum_chrome_version": "120",
+  "incognito": "not_allowed"
+}

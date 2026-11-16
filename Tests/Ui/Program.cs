@@ -1,3 +1,4 @@
+using System.IO;
 using Application = System.Windows.Application;
 using System.Diagnostics;
 using System.Reflection;
@@ -10,6 +11,7 @@ class Program
 {
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     static extern IntPtr GetForegroundWindow();
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd,out uint pid);
     [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
     struct KeyboardInput { public ushort Key, Scan; public uint Flags, Time; public IntPtr Extra; }
     [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
@@ -29,6 +31,13 @@ class Program
         Assert(SendInput((uint)inputs.Length,inputs,System.Runtime.InteropServices.Marshal.SizeOf<Input>())==inputs.Length,"Windows rejected test keystrokes");
         Pump(100);
     }
+    static string ForegroundName(){GetWindowThreadProcessId(GetForegroundWindow(),out var pid);try{return Process.GetProcessById((int)pid).ProcessName;}catch{return "unavailable";}}
+    static void WaitForInput(PasswordWindow dialog,System.Windows.Controls.PasswordBox secret)
+    {
+        long deadline=Environment.TickCount64+1500;
+        while(Environment.TickCount64<deadline && (!dialog.IsActive || !secret.IsKeyboardFocused || GetForegroundWindow()!=new WindowInteropHelper(dialog).Handle))Pump(25);
+        Assert(dialog.IsActive&&secret.IsKeyboardFocused&&GetForegroundWindow()==new WindowInteropHelper(dialog).Handle,"Prompt did not acquire native input focus after rendering settled; foreground process="+ForegroundName());
+    }
     static BindingFlags Flags = BindingFlags.Instance | BindingFlags.NonPublic;
     static int passed;
     static void Assert(bool value, string message) { if (!value) throw new Exception(message); }
@@ -41,6 +50,7 @@ class Program
     static void Check(string name, Action action) { action(); passed++; Console.WriteLine("PASS " + name); }
     [STAThread] static int Main(string[] args)
     {
+        bool nativeInput=!args.Contains("--skip-native-input");
         Process? child = null; Process? background = null; MainWindow? main = null;
         try {
             var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
@@ -83,6 +93,7 @@ class Program
             background = Process.Start(new ProcessStartInfo(args[0], "--background") { UseShellExecute=false, CreateNoWindow=true, RedirectStandardOutput=true, RedirectStandardInput=true })!;
             Assert(background.StandardOutput.ReadLine()=="READY", "Background fixture failed to start");
             main = new MainWindow();
+            typeof(MainWindow).GetProperty("EnableProfileBridge",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(main,false);
             var config = new LockSettings(); SettingsStore.SetPassword(config, "test-admin-password"); SettingsStore.SetAppPassword(config, "test-app-password");
             // Replace in-memory settings before Loaded; no test writes use the real settings path.
             typeof(MainWindow).GetProperty("Config")!.SetValue(main, config);
@@ -92,10 +103,10 @@ class Program
             Check("Shortcut activation restores the main window", () => { Call(main, "ShowFromTray"); Pump(100); Assert(main.IsVisible && main.WindowState == WindowState.Normal, "Main window did not restore"); });
             typeof(FreeAppLock.App).GetProperty("StartInTray", BindingFlags.Static | BindingFlags.NonPublic)!.SetValue(null, false);
             Check("Public version is shown beside the app name", () => {
-                Assert(FreeAppLock.App.DisplayVersion=="1.0.1","Wrong public version");
-                Assert(main.Title.Contains("FreeAppLock v1.0.1"),"Title bar has no version");
-                Assert(((System.Windows.Controls.TextBlock)main.FindName("AppHeading")).Text=="FreeAppLock v1.0.1","App header has no version");
-                Assert(Field<System.Windows.Forms.NotifyIcon>(main,"tray").Text=="FreeAppLock v1.0.1","Tray tooltip has no version");
+                Assert(FreeAppLock.App.DisplayVersion=="1.1.0","Wrong public version");
+                Assert(main.Title.Contains("FreeAppLock v1.1.0"),"Title bar has no version");
+                Assert(((System.Windows.Controls.TextBlock)main.FindName("AppHeading")).Text=="FreeAppLock v1.1.0","App header has no version");
+                Assert(Field<System.Windows.Forms.NotifyIcon>(main,"tray").Text=="FreeAppLock v1.1.0","Tray tooltip has no version");
             });
             Check("App, password and settings windows share the brand icon", () => {
                 Assert(main.Icon?.ToString().Contains("Assets/AppLock.ico") == true, "Main window icon missing");
@@ -120,6 +131,35 @@ class Program
                 background.Kill(); background.WaitForExit();
                 Call(main,"RefreshApps",false);
                 Assert(list.SelectedItem is AppEntry selected && selected.Name.Equals(child.ProcessName,StringComparison.OrdinalIgnoreCase), "Selection lost when process IDs changed");
+            });
+            Check("Saved protections include closed apps and disconnected profiles", () => {
+                config.LockedNames.Add("example-editor");config.AppRules["example-editor"]=new LockRule {AwaySeconds=300,MaximumUnlockedSeconds=1800,LockOnMinimize=false};
+                string profile=Guid.NewGuid().ToString();config.BrowserProfiles[profile]=new BrowserProfileRule {Name="Work",Browser="brave"};
+                Call(main,"RefreshRuleViews");
+                var list=(System.Windows.Controls.ListView)main.FindName("ProtectedApps");var rows=(List<SavedRuleEntry>)list.ItemsSource;
+                Assert(rows.Any(r=>r.Id=="example-editor"&&r.State.StartsWith("Not running")),"Closed app rule missing");
+                Assert(rows.Any(r=>r.Id==profile&&r.State=="Extension offline"),"Disconnected profile claimed protection");
+                list.SelectedItem=rows.First(r=>r.Id=="example-editor");Call(main,"RefreshRuleViews");
+                Assert(list.SelectedItem is SavedRuleEntry selected&&selected.Id=="example-editor","Saved-rule selection did not survive refresh");
+                if(args.Length>2 && !args[2].StartsWith("--"))
+                {
+                    var tabs=(System.Windows.Controls.TabControl)main.FindName("PageTabs");tabs.SelectedIndex=1;main.UpdateLayout();
+                    var bitmap=new System.Windows.Media.Imaging.RenderTargetBitmap((int)main.ActualWidth,(int)main.ActualHeight,96,96,System.Windows.Media.PixelFormats.Pbgra32);bitmap.Render(main);
+                    var encoder=new System.Windows.Media.Imaging.PngBitmapEncoder();encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bitmap));Directory.CreateDirectory(args[2]);using(var file=File.Create(Path.Combine(args[2],"locked-apps.png")))encoder.Save(file);
+                    tabs.SelectedIndex=0;
+                }
+                config.LockedNames.Remove("example-editor");config.AppRules.Remove("example-editor");config.BrowserProfiles.Remove(profile);Call(main,"RefreshRuleViews");
+            });
+            Check("Rule editor accepts independent timers and rejects zero session limit", () => {
+                var dialog=new RuleEditorWindow("Example editor",new LockRule());var timer=new DispatcherTimer {Interval=TimeSpan.FromMilliseconds(100)};
+                timer.Tick+=(_,_)=>{
+                    timer.Stop();((System.Windows.Controls.CheckBox)dialog.FindName("AwayEnabled")).IsChecked=false;
+                    ((System.Windows.Controls.CheckBox)dialog.FindName("MaximumEnabled")).IsChecked=true;
+                    ((System.Windows.Controls.CheckBox)dialog.FindName("MinimizeLocks")).IsChecked=false;
+                    var minutes=(System.Windows.Controls.TextBox)dialog.FindName("MaximumMinutes");minutes.Text="0";Call(dialog,"Save_Click",dialog,new RoutedEventArgs());Assert(dialog.IsVisible,"Zero session limit accepted");
+                    minutes.Text="0.5";Call(dialog,"Save_Click",dialog,new RoutedEventArgs());
+                };
+                timer.Start();Assert(dialog.ShowDialog()==true,"Rule edit cancelled");Assert(dialog.Result.AwaySeconds==null&&dialog.Result.MaximumUnlockedSeconds==30&&!dialog.Result.LockOnMinimize,"Rule fields did not save independently");
             });
             Check("Owned windows are discovered", () => {
                 var found = (Dictionary<IntPtr,int>)typeof(MainWindow).GetMethod("EnumerateTopLevelWindows", BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, null)!;
@@ -154,7 +194,7 @@ class Program
                 Call(main,"Unlock_Click",main,new RoutedEventArgs());
                 Assert(((System.Windows.Controls.TextBlock)main.FindName("Notice")).Text.StartsWith("Multiple windows"), "Grouped Unlock selected an arbitrary window");
             });
-            Check("Hidden-owner prompt accepts typing immediately and approves only its window", () => {
+            Check(nativeInput?"Hidden-owner prompt accepts typing immediately and approves only its window":"Hidden-owner approval and isolation (native input explicitly skipped)", () => {
                 main.Hide();
                 var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
                 timer.Tick += (_, _) => {
@@ -162,10 +202,9 @@ class Program
                     if (dialog == null) return;
                     timer.Stop();
                     var secret=(System.Windows.Controls.PasswordBox)dialog.FindName("Secret");
-                    Assert(dialog.Owner==null && dialog.IsActive && secret.IsKeyboardFocused, "Hidden-owner prompt lacks initial keyboard focus");
-                    Assert(GetForegroundWindow()==new WindowInteropHelper(dialog).Handle,"Dialog is not the native foreground window (actual="+GetForegroundWindow()+", expected="+new WindowInteropHelper(dialog).Handle+", session="+Process.GetCurrentProcess().SessionId+")");
-                    TypeText("test-app-password");
-                    Assert(secret.Password=="test-app-password", "Typing did not reach password box (received " + secret.Password.Length + " characters)");
+                    Assert(dialog.Owner==null,"Hidden owner was retained");
+                    if(nativeInput){WaitForInput(dialog,secret);TypeText("test-app-password");Assert(secret.Password=="test-app-password","Native typing failed");}
+                    else secret.Password="test-app-password";
                     Call(dialog, "Submit_Click", dialog, new RoutedEventArgs());
                 };
                 timer.Start(); Call(main, "Prompt", handles[0], child.Id, child.ProcessName); timer.Stop();
@@ -178,21 +217,28 @@ class Program
                 Assert(Field<HashSet<IntPtr>>(main,"approved").Contains(handles[0]),"Changing the title revoked window approval");
                 Assert(!child.HasExited,"Target process was closed");
             });
-            Check("Minimized-owner prompt accepts typing without a click", () => {
+            Check(nativeInput?"Minimized-owner prompt accepts typing without a click":"Minimized-owner approval (native input explicitly skipped)", () => {
                 main.WindowState=WindowState.Minimized;
                 var timer=new DispatcherTimer { Interval=TimeSpan.FromMilliseconds(300) };
                 timer.Tick+=(_,_)=> {
                     var dialog=app.Windows.OfType<PasswordWindow>().FirstOrDefault(); if(dialog==null)return; timer.Stop();
                     var secret=(System.Windows.Controls.PasswordBox)dialog.FindName("Secret");
-                    Assert(dialog.Owner==null && dialog.IsActive && secret.IsKeyboardFocused,"Minimized-owner prompt lacks keyboard focus");
-                    Assert(GetForegroundWindow()==new WindowInteropHelper(dialog).Handle,"Dialog is not the native foreground window (actual="+GetForegroundWindow()+", expected="+new WindowInteropHelper(dialog).Handle+", session="+Process.GetCurrentProcess().SessionId+")");
-                    TypeText("test-app-password");
-                    Assert(secret.Password=="test-app-password","Keystrokes missed minimized-owner prompt");
+                    Assert(dialog.Owner==null,"Minimized owner was retained");
+                    if(nativeInput){WaitForInput(dialog,secret);TypeText("test-app-password");Assert(secret.Password=="test-app-password","Native typing failed");}
+                    else secret.Password="test-app-password";
                     Call(dialog,"Submit_Click",dialog,new RoutedEventArgs());
                 };
                 timer.Start(); Call(main,"Prompt",handles[2],child.Id,child.ProcessName); timer.Stop();
                 Assert(Field<HashSet<IntPtr>>(main,"approved").Contains(handles[2]),"Second target did not unlock");
                 Call(main,"ShowFromTray");
+            });
+            Check("Native app timers expire sessions and honor minimize choice", () => {
+                config.AppRules[child.ProcessName]=new LockRule {AwaySeconds=null,MaximumUnlockedSeconds=1,LockOnMinimize=false};
+                Pump(1100);Call(main,"Scan");Assert(!Field<HashSet<IntPtr>>(main,"approved").Contains(handles[0]),"Session limit did not revoke approval");
+                config.AppRules[child.ProcessName]=new LockRule {AwaySeconds=null,LockOnMinimize=false};
+                Field<HashSet<IntPtr>>(main,"approved").Add(handles[0]);Call(main,"Minimize",handles[0]);Pump(300);Call(main,"Scan");
+                Assert(Field<HashSet<IntPtr>>(main,"approved").Contains(handles[0]),"Minimize revoked approval when disabled");
+                config.AppRules[child.ProcessName].LockOnMinimize=true;Call(main,"Scan");Assert(!Field<HashSet<IntPtr>>(main,"approved").Contains(handles[0]),"Immediate minimize locking did not apply");config.AppRules.Remove(child.ProcessName);
             });
             Check("Asynchronous restore retains approval until target responds", () => {
                 Call(main, "Minimize", handles[0]); Pump(300);

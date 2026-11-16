@@ -12,7 +12,9 @@ A Windows desktop privacy utility that asks for a password before restoring prot
 - Show one application row for browsers and other apps with many helper processes.
 - Unlock browser windows independently. Tabs stay within their window, and switching tabs does not require another unlock.
 - Keep recognized browsers running after failed password attempts, with a retry cooldown.
-- Relock after switching away, with a configurable delay.
+- Set independent away, maximum-session and minimize-lock rules for each app or registered browser profile.
+- View every saved protection in **Locked apps**, including apps that are not running.
+- Protect selected Brave/Chrome/Edge profiles with an optional profile-local companion. [Profile setup](BROWSER-PROFILES.md).
 - Run from the system tray and optionally start automatically at Windows login.
 - Install into Program Files with desktop and Start menu shortcuts; update by running a newer installer over the existing installation.
 - Accept any nonempty admin/app password, including a single character.
@@ -21,7 +23,7 @@ FreeAppLock provides reactive privacy assistance inside an existing Windows sess
 
 ## Install
 
-1. Download `FreeAppLock-1.0.1-Setup-x64.exe` from the [v1.0.1 release](https://github.com/4haiderali/FreeAppLock/releases/tag/v1.0.1).
+1. Download `FreeAppLock-1.1.0-Setup-x64.exe` from the [v1.1.0 release](https://github.com/4haiderali/FreeAppLock/releases/tag/v1.1.0).
 2. Quit any running older FreeAppLock through its authenticated Quit action.
 3. Run setup and accept the Windows administrator prompt. The .NET runtime is included.
 4. Create your admin and app passwords on first launch, then select applications to protect.
@@ -32,7 +34,7 @@ For updates, quit FreeAppLock and run the newer installer. No uninstall is neede
 
 ## Build
 
-Requires Windows and the .NET 8 SDK:
+Requires Windows, the .NET 8 SDK, and Node.js 20 or newer for companion tests:
 
 ```powershell
 dotnet build .\FreeAppLock.csproj -c Release
@@ -71,7 +73,7 @@ The installer is written to `dist/`. Keep the production installer AppId stable 
 | `Installer/` | Inno Setup source and build script |
 | `Tests/` | Core regressions and disposable Windows integration fixtures |
 
-Version 1.0.1 passed 17 core and 17 Windows integration test groups in local verification. Those checks do not guarantee compatibility with every third-party application or Windows session transition. See the [validation report](docs/VALIDATION-v1.0.1.md).
+Version 1.1.0 adds core, Windows, extension and real multi-profile browser verification. Those checks do not guarantee compatibility with every third-party application or Windows session transition. See the [validation report](docs/VALIDATION-v1.1.0.md).
 
 ## License
 
@@ -79,4 +81,12 @@ An open-source license has not been selected. Source publication does not itself
 
 ## Public version and existing installations
 
-The public release is v1.0.1, shown beside the app name in its header, title bar and tray tooltip. It can update the earlier locally distributed v8.13 installation without uninstalling. The Windows file/upgrade version remains monotonically increasing (8.14.0.0 for this release) to preserve that upgrade path; the product/app version is 1.0.1. Future releases must increase both the public Version/AssemblyVersion and the internal FileVersion. Keep the production installer AppId stable. The installer records the internal upgrade version in a separate machine installer key, independently of its public DisplayVersion.
+The public release is v1.1.0, shown beside the app name in its header, title bar and tray tooltip. It can update the earlier locally distributed v8.13 installation without uninstalling. The Windows file/upgrade version remains monotonically increasing (8.15.0.0 for this release) to preserve that upgrade path; the product/app version is 1.1.0. Future releases must increase both the public Version/AssemblyVersion and the internal FileVersion. Keep the production installer AppId stable. The installer records the internal upgrade version in a separate machine installer key, independently of its public DisplayVersion.
+
+## Per-app and profile rules
+
+Open **Locked apps → Edit rule** to set an away delay, maximum unlocked session and minimize behavior separately for each app. Unchecking a timer makes it unlimited; disabling minimize locking still leaves any other enabled timer active. The list includes protected apps that are not running.
+
+Open **Browser profiles → Extension setup** to connect selected browser profiles. The optional companion must be loaded in each chosen profile, then protected with an admin-approved desktop rule. Read [BROWSER-PROFILES.md](BROWSER-PROFILES.md) before switching from an app-wide browser lock. Protection requires the desktop app and companion to remain enabled and connected; regular windows only.
+
+On a desktop where another application owns input, you can run `build-and-test.ps1 -SkipNativeInput`; the output explicitly reports that the two keyboard-injection assertions were skipped. The default run keeps those assertions enabled. The installer build script accepts `-SkipTests` for packaging a previously verified build.

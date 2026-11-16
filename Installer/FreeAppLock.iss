@@ -21,7 +21,7 @@
 #endif
 
 #ifndef AppVersion
-  #define AppVersion "1.0.1"
+  #define AppVersion "1.1.0"
 #endif
 #ifndef UpgradeVersion
   #define UpgradeVersion GetVersionNumbersString(PublishDir + "\FreeAppLock.exe")
@@ -75,7 +75,12 @@ Name: "startup"; Description: "Start FreeAppLock at Windows login (all users, qu
 Source: "{#PublishDir}\FreeAppLock.exe"; DestDir: "{app}"; Flags: replacesameversion
 Source: "{#PublishDir}\README.md"; DestDir: "{app}"; Flags: replacesameversion
 Source: "{#PublishDir}\SECURITY.md"; DestDir: "{app}"; Flags: replacesameversion
-Source: "{#PublishDir}\RELEASE-NOTES-v1.0.1.md"; DestDir: "{app}"; Flags: replacesameversion
+Source: "{#PublishDir}\RELEASE-NOTES-v1.1.0.md"; DestDir: "{app}"; Flags: replacesameversion
+
+Source: "{#PublishDir}\FreeAppLock.NativeHost.exe"; DestDir: "{app}"; Flags: replacesameversion
+Source: "{#PublishDir}\com.freeapplock.profiles.json"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PublishDir}\BrowserExtension\*"; DestDir: "{app}\BrowserExtension"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#PublishDir}\BROWSER-PROFILES.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{#MenuDir}\FreeAppLock"; Filename: "{app}\FreeAppLock.exe"; WorkingDir: "{app}"; IconFilename: "{app}\FreeAppLock.exe"; IconIndex: 0
@@ -91,6 +96,9 @@ Root: {#StartupRoot}; Subkey: "{#StartupKey}"; ValueType: string; ValueName: "Fr
 Root: {#StartupRoot}; Subkey: "{#StartupKey}"; ValueName: "FreeAppLock"; Flags: deletevalue; Check: not WizardIsTaskSelected('startup')
 
 #ifndef TestRoot
+Root: HKLM; Subkey: "Software\Google\Chrome\NativeMessagingHosts\com.freeapplock.profiles"; ValueType: string; ValueData: "{app}\com.freeapplock.profiles.json"; Flags: uninsdeletekey
+Root: HKLM; Subkey: "Software\BraveSoftware\Brave-Browser\NativeMessagingHosts\com.freeapplock.profiles"; ValueType: string; ValueData: "{app}\com.freeapplock.profiles.json"; Flags: uninsdeletekey
+Root: HKLM; Subkey: "Software\Microsoft\Edge\NativeMessagingHosts\com.freeapplock.profiles"; ValueType: string; ValueData: "{app}\com.freeapplock.profiles.json"; Flags: uninsdeletekey
 [Run]
 Filename: "{app}\FreeAppLock.exe"; Description: "Launch FreeAppLock now"; Flags: nowait postinstall skipifsilent runasoriginaluser
 #endif
@@ -111,4 +119,10 @@ begin
         SuppressibleMsgBox('A newer FreeAppLock version is already installed. Use the same or a newer installer.', mbError, MB_OK, IDOK);
         Result := False;
       end;
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  if FileExists(ExpandConstant('{app}\FreeAppLock.NativeHost.exe')) then Sleep(2500);
+  Result := '';
 end;

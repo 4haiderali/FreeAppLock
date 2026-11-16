@@ -1,0 +1,9 @@
+{
+  "name": "com.freeapplock.profiles",
+  "description": "FreeAppLock browser profile bridge",
+  "path": "FreeAppLock.NativeHost.exe",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://ainidohpgcpmokmgmoalbjllegiapphh/"
+  ]
+}
